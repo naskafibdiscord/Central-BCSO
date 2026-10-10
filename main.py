@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -30,6 +31,28 @@ def load():
 def save(db):
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(db, f, indent=2, ensure_ascii=False)
+
+
+STATE_FILE = os.path.join(DATA_DIR, "sync_state.json")
+
+
+def load_state():
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_state(state):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+
+
+def code_hash():
+    """Empreinte du code : change dès que main.py est modifié."""
+    with open(os.path.abspath(__file__), "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()
 
 
 def default_responses():
@@ -962,11 +985,9 @@ class TicketBot(discord.Client):
         v.add_item(TicketSelect(placeholder))
         self.add_view(v)
         self.add_view(CloseView())
-        # Vide les anciennes commandes globales (évite les doublons avec celles du serveur)
-        await self.tree.sync()
 
-    async def sync_guild(self, guild):
-        # Commandes synchronisées directement sur le serveur : elles apparaissent tout de suite
+    def register_guild(self, guild):
+        # Enregistre les commandes du serveur dans le bot (nécessaire pour qu'elles répondent)
         self.tree.clear_commands(guild=guild)
         self.tree.add_command(TicketConfig(), guild=guild)
         self.tree.add_command(ReponseConfig(), guild=guild)
@@ -975,11 +996,33 @@ class TicketBot(discord.Client):
         self.tree.add_command(unblacklist, guild=guild)
         self.tree.add_command(blacklist_liste, guild=guild)
         self.tree.add_command(WelcomeConfig(), guild=guild)
+
+    async def sync_guild(self, guild, force=False):
+        self.register_guild(guild)
+        state = load_state()
+        h = code_hash()
+        # Diagnostic : version du code et commandes réellement chargées
+        print(f"📦 Version du code : {h[:7]} | commandes chargées : {[c.name for c in self.tree.get_commands(guild=guild)]}")
+        # On ne synchronise avec Discord que si le code a changé (évite le rate limit)
+        if not force and state.get(f"guild_{guild.id}") == h:
+            print(f"⏭️ {guild.name} : commandes déjà à jour")
+            return
         synced = await self.tree.sync(guild=guild)
+        state[f"guild_{guild.id}"] = h
+        save_state(state)
         print(f"🔄 {guild.name} : {len(synced)} commandes -> {[c.name for c in synced]}")
 
     async def on_ready(self):
         print(f"✅ Connecté en tant que {self.user}")
+        state = load_state()
+        if not state.get("global_cleared"):
+            try:
+                # Vide une seule fois les anciennes commandes globales (évite les doublons)
+                await self.tree.sync()
+                state["global_cleared"] = True
+                save_state(state)
+            except Exception as e:
+                print(f"❌ Nettoyage des commandes globales impossible : {e}")
         for guild in self.guilds:
             try:
                 await self.sync_guild(guild)
