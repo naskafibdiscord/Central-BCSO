@@ -69,6 +69,7 @@ def default_config():
         "categoryId": None,
         "staffRoleId": None,
         "responses": default_responses(),
+        "blacklist": {},
     }
 
 
@@ -515,10 +516,120 @@ async def reponse(interaction: discord.Interaction):
     )
 
 
+# ---------- Blacklist : /blacklist, /unblacklist, /blacklist_liste ----------
+BLACKLIST_ROLE_NAME = "blacklist"
+
+
+async def get_blacklist_role(guild, create=True):
+    role = discord.utils.find(lambda r: r.name.lower() == BLACKLIST_ROLE_NAME, guild.roles)
+    if not role and create:
+        role = await guild.create_role(name=BLACKLIST_ROLE_NAME, reason="Système de blacklist")
+    return role
+
+
+def clean_id(text):
+    digits = re.sub(r"\D", "", text)
+    return int(digits) if digits else None
+
+
+@app_commands.command(name="blacklist", description="Blacklister quelqu'un définitivement (même s'il quitte le serveur)")
+@app_commands.describe(identifiant="ID Discord de la personne", raison="Raison (optionnel)")
+@app_commands.default_permissions(administrator=True)
+@app_commands.guild_only()
+async def blacklist(interaction: discord.Interaction, identifiant: str, raison: str = "Non précisée"):
+    uid = clean_id(identifiant)
+    if not uid:
+        return await interaction.response.send_message("❌ Identifiant invalide (chiffres uniquement).", ephemeral=True)
+    g = get_guild(interaction.guild_id)
+    if str(uid) in g["blacklist"]:
+        return await interaction.response.send_message("⚠️ Cette personne est déjà blacklistée.", ephemeral=True)
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        user = await interaction.client.fetch_user(uid)
+    except discord.NotFound:
+        return await interaction.followup.send("❌ Aucun compte Discord avec cet identifiant.", ephemeral=True)
+
+    entry = {
+        "name": str(user),
+        "reason": raison[:500],
+        "by": interaction.user.id,
+        "date": time.strftime("%d/%m/%Y"),
+    }
+    update_guild(interaction.guild_id, lambda x: x["blacklist"].__setitem__(str(uid), entry))
+
+    guild = interaction.guild
+    member = guild.get_member(uid)
+    if member is None:
+        try:
+            member = await guild.fetch_member(uid)
+        except discord.NotFound:
+            member = None
+
+    if member:
+        try:
+            role = await get_blacklist_role(guild)
+            await member.add_roles(role, reason=f"Blacklist par {interaction.user}")
+            status = f"Le rôle **{role.name}** a été donné à {member.mention}."
+        except discord.Forbidden:
+            status = (
+                "⚠️ Enregistré, mais je n'ai pas pu donner le rôle : "
+                "vérifie que mon rôle est **au-dessus** du rôle blacklist et que j'ai « Gérer les rôles »."
+            )
+    else:
+        status = "La personne n'est pas sur le serveur : le rôle lui sera donné automatiquement si elle revient."
+
+    await interaction.followup.send(
+        f"🚫 **{user}** (`{uid}`) est blacklisté(e).\nRaison : {entry['reason']}\n{status}", ephemeral=True
+    )
+
+
+@app_commands.command(name="unblacklist", description="Retirer quelqu'un de la blacklist")
+@app_commands.describe(identifiant="ID Discord de la personne")
+@app_commands.default_permissions(administrator=True)
+@app_commands.guild_only()
+async def unblacklist(interaction: discord.Interaction, identifiant: str):
+    uid = clean_id(identifiant)
+    g = get_guild(interaction.guild_id)
+    if not uid or str(uid) not in g["blacklist"]:
+        return await interaction.response.send_message("❌ Cette personne n'est pas blacklistée.", ephemeral=True)
+    update_guild(interaction.guild_id, lambda x: x["blacklist"].pop(str(uid), None))
+
+    member = interaction.guild.get_member(uid)
+    role = await get_blacklist_role(interaction.guild, create=False)
+    if member and role and role in member.roles:
+        try:
+            await member.remove_roles(role, reason=f"Retrait blacklist par {interaction.user}")
+        except discord.Forbidden:
+            pass
+    await interaction.response.send_message(f"✅ `{uid}` a été retiré(e) de la blacklist.", ephemeral=True)
+
+
+@app_commands.command(name="blacklist_liste", description="Voir toutes les personnes blacklistées")
+@app_commands.default_permissions(administrator=True)
+@app_commands.guild_only()
+async def blacklist_liste(interaction: discord.Interaction):
+    g = get_guild(interaction.guild_id)
+    if not g["blacklist"]:
+        return await interaction.response.send_message("La blacklist est vide.", ephemeral=True)
+    lines = [
+        f"• <@{uid}> (`{uid}`) — {e['reason']} _({e['date']})_" for uid, e in g["blacklist"].items()
+    ]
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:3990] + "\n…"
+    await interaction.response.send_message(
+        embed=discord.Embed(title=f"🚫 Blacklist ({len(lines)})", description=text, color=0xED4245),
+        ephemeral=True,
+    )
+
+
 # ---------- Bot ----------
 class TicketBot(discord.Client):
     def __init__(self):
-        super().__init__(intents=discord.Intents.default())
+        intents = discord.Intents.default()
+        intents.members = True  # nécessaire pour détecter les arrivées (blacklist)
+        super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
@@ -537,6 +648,9 @@ class TicketBot(discord.Client):
         self.tree.add_command(TicketConfig(), guild=guild)
         self.tree.add_command(ReponseConfig(), guild=guild)
         self.tree.add_command(reponse, guild=guild)
+        self.tree.add_command(blacklist, guild=guild)
+        self.tree.add_command(unblacklist, guild=guild)
+        self.tree.add_command(blacklist_liste, guild=guild)
         synced = await self.tree.sync(guild=guild)
         print(f"🔄 {guild.name} : {len(synced)} commandes -> {[c.name for c in synced]}")
 
@@ -547,6 +661,26 @@ class TicketBot(discord.Client):
                 await self.sync_guild(guild)
             except Exception as e:
                 print(f"❌ Synchronisation impossible sur {guild.name} : {e}")
+
+    async def on_member_join(self, member):
+        # Blacklisté qui revient : le rôle est remis immédiatement
+        if str(member.id) in get_guild(member.guild.id)["blacklist"]:
+            try:
+                role = await get_blacklist_role(member.guild)
+                await member.add_roles(role, reason="Blacklist (retour sur le serveur)")
+            except discord.HTTPException as e:
+                print(f"❌ Impossible de remettre le rôle blacklist à {member}: {e}")
+
+    async def on_member_update(self, before, after):
+        # Si quelqu'un retire le rôle à un blacklisté, il est remis
+        if str(after.id) not in get_guild(after.guild.id)["blacklist"]:
+            return
+        role = await get_blacklist_role(after.guild, create=False)
+        if role and role in before.roles and role not in after.roles:
+            try:
+                await after.add_roles(role, reason="Blacklist (rôle retiré)")
+            except discord.HTTPException:
+                pass
 
     async def on_guild_join(self, guild):
         await self.sync_guild(guild)
