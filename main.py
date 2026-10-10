@@ -527,6 +527,22 @@ async def get_blacklist_role(guild, create=True):
     return role
 
 
+async def hide_channels(guild, role):
+    """Refuse « Voir le salon » au rôle blacklist sur tous les salons et catégories."""
+    count = 0
+    for channel in guild.channels:
+        overwrite = channel.overwrites_for(role)
+        if overwrite.view_channel is False:
+            continue
+        overwrite.view_channel = False
+        try:
+            await channel.set_permissions(role, overwrite=overwrite, reason="Blacklist : salon masqué")
+            count += 1
+        except discord.HTTPException as e:
+            print(f"❌ Impossible de masquer #{channel.name} : {e}")
+    return count
+
+
 def clean_id(text):
     digits = re.sub(r"\D", "", text)
     return int(digits) if digits else None
@@ -566,15 +582,25 @@ async def blacklist(interaction: discord.Interaction, identifiant: str, raison: 
         except discord.NotFound:
             member = None
 
-    if member:
+    try:
+        role = await get_blacklist_role(guild)
+        await hide_channels(guild, role)
+    except discord.Forbidden:
+        role = None
+
+    if role is None:
+        status = (
+            "⚠️ Enregistré, mais je n'ai pas pu préparer le rôle : "
+            "donne-moi « Gérer les rôles » et « Gérer les salons »."
+        )
+    elif member:
         try:
-            role = await get_blacklist_role(guild)
             await member.add_roles(role, reason=f"Blacklist par {interaction.user}")
-            status = f"Le rôle **{role.name}** a été donné à {member.mention}."
+            status = f"Le rôle **{role.name}** a été donné à {member.mention} : il ne voit plus aucun salon."
         except discord.Forbidden:
             status = (
                 "⚠️ Enregistré, mais je n'ai pas pu donner le rôle : "
-                "vérifie que mon rôle est **au-dessus** du rôle blacklist et que j'ai « Gérer les rôles »."
+                "mon rôle doit être **au-dessus** du rôle blacklist."
             )
     else:
         status = "La personne n'est pas sur le serveur : le rôle lui sera donné automatiquement si elle revient."
@@ -661,6 +687,15 @@ class TicketBot(discord.Client):
                 await self.sync_guild(guild)
             except Exception as e:
                 print(f"❌ Synchronisation impossible sur {guild.name} : {e}")
+            role = await get_blacklist_role(guild, create=False)
+            if role:
+                await hide_channels(guild, role)
+
+    async def on_guild_channel_create(self, channel):
+        # Tout nouveau salon est automatiquement caché au rôle blacklist
+        role = await get_blacklist_role(channel.guild, create=False)
+        if role:
+            await hide_channels(channel.guild, role)
 
     async def on_member_join(self, member):
         # Blacklisté qui revient : le rôle est remis immédiatement
