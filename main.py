@@ -30,6 +30,37 @@ def save(db):
         json.dump(db, f, indent=2, ensure_ascii=False)
 
 
+def default_responses():
+    return [
+        {
+            "id": "acceptee",
+            "name": "Candidature acceptée",
+            "text": (
+                "Bonjour,\n"
+                "Nous avons le plaisir de vous informer que votre candidature pour rejoindre le BCSO a été acceptée !\n"
+                "Votre profil et vos motivations ont retenu toute notre attention. Nous vous invitons à vous manifester "
+                "dès que possible afin d'organiser votre intégration et de planifier vos premières étapes au sein du service.\n"
+                "Félicitations et bienvenue parmi nous !\n"
+                "Cordialement,\n"
+                "L'équipe de direction du BCSO"
+            ),
+        },
+        {
+            "id": "refusee",
+            "name": "Candidature refusée",
+            "text": (
+                "Bonjour,\n"
+                "Nous vous remercions pour votre intérêt envers le BCSO.\n"
+                "Après étude de votre dossier, nous avons le regret de vous informer que votre candidature n'a pas été "
+                "retenue pour cette session. Les places étant limitées, nous avons dû effectuer une sélection stricte.\n"
+                "Nous vous souhaitons une bonne continuation et vous encourageons à postuler de nouveau lors de prochains recrutements.\n"
+                "Cordialement,\n"
+                "La direction du BCSO"
+            ),
+        },
+    ]
+
+
 def default_config():
     return {
         "title": "🎫 Support",
@@ -37,6 +68,7 @@ def default_config():
         "types": [],
         "categoryId": None,
         "staffRoleId": None,
+        "responses": default_responses(),
     }
 
 
@@ -299,6 +331,190 @@ class TicketConfig(app_commands.Group, name="ticket_config", description="Config
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+# ---------- Réponses types : /reponse_config et /reponse ----------
+def render_response(text, member):
+    """Place la mention à côté de « Bonjour » (ou à la place de {user} si présent)."""
+    if "{user}" in text:
+        return text.replace("{user}", member.mention)
+    match = re.search(r"bonjour", text, re.IGNORECASE)
+    if match:
+        return text[: match.end()] + " " + member.mention + text[match.end():]
+    return f"{member.mention}\n{text}"
+
+
+async def response_choices(interaction: discord.Interaction, current: str):
+    g = get_guild(interaction.guild_id)
+    return [
+        app_commands.Choice(name=r["name"][:100], value=r["id"])
+        for r in g["responses"]
+        if current.lower() in r["name"].lower()
+    ][:25]
+
+
+class ReponseModal(discord.ui.Modal):
+    def __init__(self, existing=None):
+        super().__init__(title="Modifier la réponse" if existing else "Nouvelle réponse")
+        self.existing_id = existing["id"] if existing else None
+        self.nom = discord.ui.TextInput(
+            label="Nom de la réponse",
+            placeholder="Ex : Candidature acceptée",
+            default=existing["name"] if existing else None,
+            max_length=50,
+        )
+        self.texte = discord.ui.TextInput(
+            label="Texte du message",
+            style=discord.TextStyle.paragraph,
+            placeholder="Bonjour,\n...",
+            default=existing["text"] if existing else None,
+            max_length=1900,
+        )
+        self.add_item(self.nom)
+        self.add_item(self.texte)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        g = get_guild(interaction.guild_id)
+        if not self.existing_id and len(g["responses"]) >= 25:
+            return await interaction.response.send_message("❌ Maximum 25 réponses.", ephemeral=True)
+
+        def apply(x):
+            if self.existing_id:
+                for r in x["responses"]:
+                    if r["id"] == self.existing_id:
+                        r["name"] = self.nom.value
+                        r["text"] = self.texte.value
+            else:
+                x["responses"].append(
+                    {"id": format(int(time.time() * 1000), "x"), "name": self.nom.value, "text": self.texte.value}
+                )
+
+        update_guild(interaction.guild_id, apply)
+        await interaction.response.send_message(
+            f"✅ Réponse **{self.nom.value}** enregistrée. Utilise `/reponse` pour l'envoyer.", ephemeral=True
+        )
+
+
+@app_commands.default_permissions(administrator=True)
+@app_commands.guild_only()
+class ReponseConfig(app_commands.Group, name="reponse_config", description="Configurer les réponses types"):
+
+    @app_commands.command(name="ajouter", description="Créer une nouvelle réponse type")
+    async def ajouter(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(ReponseModal())
+
+    @app_commands.command(name="modifier", description="Modifier une réponse type")
+    @app_commands.describe(nom="Réponse à modifier")
+    async def modifier(self, interaction: discord.Interaction, nom: str):
+        g = get_guild(interaction.guild_id)
+        r = next((r for r in g["responses"] if r["id"] == nom), None)
+        if not r:
+            return await interaction.response.send_message("❌ Réponse introuvable.", ephemeral=True)
+        await interaction.response.send_modal(ReponseModal(r))
+
+    @modifier.autocomplete("nom")
+    async def modifier_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await response_choices(interaction, current)
+
+    @app_commands.command(name="supprimer", description="Supprimer une réponse type")
+    @app_commands.describe(nom="Réponse à supprimer")
+    async def supprimer(self, interaction: discord.Interaction, nom: str):
+        g = get_guild(interaction.guild_id)
+        if not any(r["id"] == nom for r in g["responses"]):
+            return await interaction.response.send_message("❌ Réponse introuvable.", ephemeral=True)
+        update_guild(interaction.guild_id, lambda x: x.update(responses=[r for r in x["responses"] if r["id"] != nom]))
+        await interaction.response.send_message("🗑️ Réponse supprimée.", ephemeral=True)
+
+    @supprimer.autocomplete("nom")
+    async def supprimer_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await response_choices(interaction, current)
+
+    @app_commands.command(name="voir", description="Voir les réponses types enregistrées")
+    async def voir(self, interaction: discord.Interaction):
+        g = get_guild(interaction.guild_id)
+        if not g["responses"]:
+            return await interaction.response.send_message(
+                "Aucune réponse. Crée-en une avec `/reponse_config ajouter`.", ephemeral=True
+            )
+        embed = discord.Embed(title="📨 Réponses types", color=0x5865F2)
+        for r in g["responses"]:
+            preview = r["text"][:200] + ("…" if len(r["text"]) > 200 else "")
+            embed.add_field(name=r["name"], value=preview, inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class ResponseSelect(discord.ui.Select):
+    def __init__(self, responses):
+        super().__init__(
+            placeholder="1️⃣ Choisis le texte à envoyer",
+            options=[discord.SelectOption(label=r["name"][:100], value=r["id"]) for r in responses],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.selected_id = self.values[0]
+        await interaction.response.defer()
+
+
+class MemberSelect(discord.ui.UserSelect):
+    def __init__(self):
+        super().__init__(placeholder="2️⃣ Choisis la personne à mentionner")
+
+    async def callback(self, interaction: discord.Interaction):
+        self.view.member = self.values[0]
+        await interaction.response.defer()
+
+
+class SendButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Envoyer", emoji="📨", style=discord.ButtonStyle.success)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if not view.selected_id or not view.member:
+            return await interaction.response.send_message(
+                "❌ Choisis un texte ET une personne avant d'envoyer.", ephemeral=True
+            )
+        g = get_guild(interaction.guild_id)
+        r = next((r for r in g["responses"] if r["id"] == view.selected_id), None)
+        if not r:
+            return await interaction.response.send_message("❌ Ce texte n'existe plus.", ephemeral=True)
+        try:
+            await interaction.channel.send(
+                render_response(r["text"], view.member),
+                allowed_mentions=discord.AllowedMentions(users=[view.member]),
+            )
+        except discord.HTTPException:
+            return await interaction.response.send_message(
+                "❌ Impossible d'envoyer ici (vérifie les permissions du bot dans ce salon).", ephemeral=True
+            )
+        view.stop()
+        await interaction.response.edit_message(content="✅ Message envoyé !", view=None)
+
+
+class ResponsePanel(discord.ui.View):
+    def __init__(self, responses):
+        super().__init__(timeout=300)
+        self.selected_id = None
+        self.member = None
+        self.add_item(ResponseSelect(responses))
+        self.add_item(MemberSelect())
+        self.add_item(SendButton())
+
+
+@app_commands.command(name="reponse", description="Ouvrir le panel pour envoyer une réponse type")
+@app_commands.default_permissions(manage_messages=True)
+@app_commands.guild_only()
+async def reponse(interaction: discord.Interaction):
+    g = get_guild(interaction.guild_id)
+    if not g["responses"]:
+        return await interaction.response.send_message(
+            "❌ Aucune réponse. Crée-en une avec `/reponse_config ajouter`.", ephemeral=True
+        )
+    await interaction.response.send_message(
+        "📨 **Réponses types** : choisis le texte, la personne à mentionner, puis clique sur Envoyer.",
+        view=ResponsePanel(g["responses"]),
+        ephemeral=True,
+    )
+
+
 # ---------- Bot ----------
 class TicketBot(discord.Client):
     def __init__(self):
@@ -307,6 +523,8 @@ class TicketBot(discord.Client):
 
     async def setup_hook(self):
         self.tree.add_command(TicketConfig())
+        self.tree.add_command(ReponseConfig())
+        self.tree.add_command(reponse)
         # Vues persistantes : les menus/boutons marchent encore après un redémarrage
         placeholder = [discord.SelectOption(label="placeholder", value="placeholder")]
         v = discord.ui.View(timeout=None)
