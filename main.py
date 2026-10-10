@@ -1,6 +1,5 @@
 import asyncio
 import hashlib
-import io
 import json
 import os
 import re
@@ -10,7 +9,6 @@ import unicodedata
 import discord
 from discord import app_commands
 from dotenv import load_dotenv
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 load_dotenv()
 
@@ -95,7 +93,6 @@ def default_config():
         "staffRoleId": None,
         "responses": default_responses(),
         "blacklist": {},
-        "welcome": {},
     }
 
 
@@ -194,6 +191,8 @@ class TicketSelect(discord.ui.Select):
             embed=embed,
             view=CloseView(),
         )
+        if is_recruitment(ticket_type):
+            await send_recruitment_form(channel, interaction.user)
         await interaction.followup.send(f"✅ Ticket créé : {channel.mention}", ephemeral=True)
 
 
@@ -676,298 +675,91 @@ async def blacklist_liste(interaction: discord.Interaction):
     )
 
 
-# ---------- Bienvenue : /bienvenue_config ----------
-W_WIDTH, W_HEIGHT = 1000, 420
+# ---------- Formulaire de recrutement (ticket « Recrutement ») ----------
+RECRUIT_COLOR = 0xC9A227
+CHECK = "☐ Oui   ☐ Non"
+
+RECRUIT_SECTIONS = [
+    ("I. INFORMATIONS PERSONNELLES", [
+        "**1.** Nom et prénom RP :",
+        "**2.** Âge RP :",
+        "**3.** Âge réel :",
+        "**4.** Disponibilités (jours et horaires) :",
+        "**5.** Identifiant Discord :",
+        "**6.** Depuis combien de temps jouez-vous sur le serveur ?",
+    ]),
+    ("II. EXPÉRIENCE ET MOTIVATIONS", [
+        "**7.** Avez-vous déjà été membre des forces de l'ordre sur un autre serveur RP ? Si oui, précisez votre expérience.",
+        "**8.** Pourquoi souhaitez-vous rejoindre la BCSO ?",
+        "**9.** Quelles sont vos principales qualités pour exercer le métier de shérif adjoint ?",
+        "**10.** Quels sont vos défauts et comment comptez-vous les améliorer ?",
+        "**11.** Que pouvez-vous apporter à la BCSO et à ses effectifs ?",
+        "**12.** Pourquoi devrions-nous vous choisir plutôt qu'un autre candidat ?",
+    ]),
+    ("III. CONNAISSANCES DU ROLEPLAY", [
+        "**13.** Expliquez avec vos propres mots ce qu'est le RP.",
+        "**14.** Qu'est-ce que le Fear RP ?",
+        "**15.** Qu'est-ce que le PowerGaming ?",
+        "**16.** Qu'est-ce que le MetaGaming ?",
+        "**17.** Que signifie le terme « No Pain RP » ?",
+        "**18.** Quelle est la différence entre une action RP et une action HRP ?",
+    ]),
+    ("IV. MISES EN SITUATION", [
+        "**19.** Vous contrôlez un véhicule dont le conducteur refuse d'obtempérer. Quelle est votre procédure ?",
+        "**20.** Lors d'une interpellation, un individu vous insulte et vous provoque. Comment réagissez-vous ?",
+        "**21.** Vous constatez qu'un collègue ne respecte pas le règlement du serveur. Que faites-vous ?",
+        "**22.** Vous êtes seul face à plusieurs individus armés. Comment gérez-vous la situation en RP ?",
+        "**23.** Un supérieur vous donne un ordre que vous estimez contraire au règlement. Quelle est votre réaction ?",
+        "**24.** Vous arrivez sur une scène où plusieurs témoins donnent des versions différentes des faits. Comment procédez-vous ?",
+    ]),
+    ("V. ENGAGEMENT ET RÈGLEMENT", [
+        f"**25.** Êtes-vous prêt à respecter la hiérarchie de la BCSO ?\n{CHECK}",
+        f"**26.** Vous engagez-vous à respecter le règlement du serveur et les règles RP ?\n{CHECK}",
+        f"**27.** Êtes-vous prêt à suivre une formation avant de prendre vos fonctions ?\n{CHECK}",
+        f"**28.** Acceptez-vous de faire preuve de professionnalisme, de neutralité et de respect envers les citoyens et vos collègues ?\n{CHECK}",
+        "**29.** Avez-vous des sanctions ou antécédents RP susceptibles d'être utiles à l'évaluation de votre candidature ? Si oui, précisez.",
+    ]),
+    ("VI. DÉCLARATION DU CANDIDAT", [
+        "*Je certifie que les informations fournies dans ce formulaire sont exactes. Je m'engage à respecter les règles du "
+        "serveur, les procédures internes de la BCSO et la hiérarchie de l'institution.*",
+        "**Nom du candidat :**\n**Date de candidature :**\n**Signature :**",
+    ]),
+    ("VII. RÉSERVÉ À L'ADMINISTRATION BCSO", [
+        "**Décision finale :**\n☐ Candidature acceptée\n☐ Entretien requis\n☐ Candidature refusée",
+        "**Évaluateur :**\n**Observations :**\n**Note finale :** …… / 20\n**Date de décision :**",
+    ]),
+]
 
 
-def welcome_defaults():
-    return {
-        "enabled": False,
-        "channelId": None,
-        "roleId": None,
-        "color": "#5865F2",
-        "hasBackground": False,
-        "title": "Bienvenue sur {server} !",
-        "message": (
-            "Nous sommes ravis de t'accueillir parmi nous ! 🎉\n\n"
-            "📜 Prends le temps de lire le règlement.\n"
-            "💬 N'hésite pas à te présenter et à discuter avec la communauté.\n\n"
-            "Tu es notre **membre n°{count}** !"
-        ),
-    }
+def is_recruitment(ticket_type):
+    return "recrutement" in slug(ticket_type["name"])
 
 
-def get_welcome(g):
-    return {**welcome_defaults(), **g.get("welcome", {})}
+async def send_recruitment_form(channel, user):
+    embeds = [discord.Embed(
+        title="🚔 BLAINE COUNTY SHERIFF'S OFFICE",
+        description="**FORMULAIRE DE RECRUTEMENT**\n\n*« Servir et protéger les citoyens de Blaine County »*",
+        color=RECRUIT_COLOR,
+    )]
+    for title, lines in RECRUIT_SECTIONS:
+        embeds.append(discord.Embed(title=title, description="\n\n".join(lines), color=RECRUIT_COLOR))
+    embeds[-1].set_footer(text="BLAINE COUNTY SHERIFF'S OFFICE — PROTÉGER ET SERVIR")
 
-
-def set_welcome(guild_id, **changes):
-    def apply(x):
-        x["welcome"] = {**welcome_defaults(), **x.get("welcome", {}), **changes}
-    return update_guild(guild_id, apply)
-
-
-def background_path(guild_id):
-    return os.path.join(DATA_DIR, f"welcome_bg_{guild_id}.img")
-
-
-def hex_to_rgb(value):
-    value = value.lstrip("#")
-    return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
-
-
-def get_font(size, bold=True):
-    candidates = (
-        ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"]
-        if bold else
-        ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/dejavu/DejaVuSans.ttf"]
+    await channel.send(
+        f"📝 {user.mention}, copie le formulaire ci-dessous, remplis-le puis renvoie-le dans ce salon.",
+        allowed_mentions=discord.AllowedMentions(users=[user]),
     )
-    for path in candidates:
-        try:
-            return ImageFont.truetype(path, size)
-        except OSError:
-            continue
-    try:
-        return ImageFont.load_default(size=size)  # police intégrée à Pillow >= 10.1
-    except TypeError:
-        return ImageFont.load_default()
-
-
-def _circle(img, center, diameter, fill):
-    """Cercle anti-aliasé."""
-    scale = 4
-    mask = Image.new("L", (diameter * scale, diameter * scale), 0)
-    ImageDraw.Draw(mask).ellipse((0, 0, diameter * scale - 1, diameter * scale - 1), fill=255)
-    mask = mask.resize((diameter, diameter), Image.LANCZOS)
-    layer = fill if isinstance(fill, Image.Image) else Image.new("RGBA", (diameter, diameter), fill)
-    img.paste(layer, (center[0] - diameter // 2, center[1] - diameter // 2), mask)
-
-
-def make_welcome_card(avatar_bytes, bg_bytes, name, count, color, server):
-    """Génère l'image de bienvenue (1000x420)."""
-    W, H = W_WIDTH, W_HEIGHT
-    accent = hex_to_rgb(color)
-    light = tuple(min(255, int(c + (255 - c) * 0.5)) for c in accent)
-
-    # --- Fond
-    if bg_bytes:
-        bg = Image.open(io.BytesIO(bg_bytes)).convert("RGB")
-        bg = ImageOps.fit(bg, (W, H), Image.LANCZOS).filter(ImageFilter.GaussianBlur(1.5))
-        bg = Image.blend(bg, Image.new("RGB", (W, H), (6, 6, 12)), 0.58)
-    else:
-        top = Image.new("RGB", (W, H), tuple(int(c * 0.22) for c in accent))
-        bottom = Image.new("RGB", (W, H), tuple(int(c * 0.05) + 4 for c in accent))
-        bg = Image.composite(bottom, top, Image.linear_gradient("L").resize((W, H)))
-    img = bg.convert("RGBA")
-
-    # --- Halos lumineux
-    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    gd.ellipse((W // 2 - 220, -140, W // 2 + 220, 300), fill=accent + (170,))
-    gd.ellipse((-180, H - 170, 260, H + 200), fill=accent + (80,))
-    gd.ellipse((W - 260, -180, W + 180, 170), fill=accent + (80,))
-    img = Image.alpha_composite(img, glow.filter(ImageFilter.GaussianBlur(75)))
-
-    # --- Cadre fin
-    frame = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    ImageDraw.Draw(frame).rounded_rectangle((16, 16, W - 17, H - 17), radius=30, outline=accent + (170,), width=3)
-    img = Image.alpha_composite(img, frame)
-
-    # --- Avatar (anneau couleur + liseré sombre)
-    size, cx, cy = 190, W // 2, 125
-    avatar = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA").resize((size, size), Image.LANCZOS)
-    _circle(img, (cx, cy), size + 30, accent + (255,))
-    _circle(img, (cx, cy), size + 14, (10, 10, 18, 255))
-    _circle(img, (cx, cy), size, avatar)
-
-    # --- Textes
-    draw = ImageDraw.Draw(img)
-
-    def centered(text, y, font, fill, spacing=0, shadow=True):
-        widths = [font.getlength(ch) for ch in text]
-        total = sum(widths) + spacing * (len(text) - 1)
-        x = (W - total) / 2
-        for ch, w in zip(text, widths):
-            if shadow:
-                draw.text((x + 2, y + 3), ch, font=font, fill=(0, 0, 0, 255))
-            draw.text((x, y), ch, font=font, fill=fill)
-            x += w + spacing
-
-    centered("BIENVENUE", 243, get_font(54), (255, 255, 255, 255), spacing=9)
-
-    name = name if len(name) <= 24 else name[:23] + "…"
-    fsize = 40
-    while get_font(fsize).getlength(name) > W - 140 and fsize > 20:
-        fsize -= 2
-    centered(name, 310, get_font(fsize), light + (255,))
-
-    # Séparateur
-    draw.rounded_rectangle((W // 2 - 40, 366, W // 2 + 40, 369), radius=2, fill=accent + (255,))
-
-    sub = f"Membre n°{count}  •  {server}"
-    if get_font(22, bold=False).getlength(sub) > W - 140:
-        sub = f"Membre n°{count}"
-    centered(sub, 376, get_font(20, bold=False), (200, 202, 215, 255), shadow=False)
-
-    out = io.BytesIO()
-    img.convert("RGB").save(out, format="PNG", optimize=True)
-    return out.getvalue()
-
-
-def fill_placeholders(text, member):
-    return (
-        text.replace("{user}", member.mention)
-        .replace("{name}", member.display_name)
-        .replace("{server}", member.guild.name)
-        .replace("{count}", str(member.guild.member_count))
-    )
-
-
-async def build_welcome(member, w):
-    avatar_bytes = await member.display_avatar.replace(size=256, format="png").read()
-    bg_bytes = None
-    if w["hasBackground"]:
-        try:
-            with open(background_path(member.guild.id), "rb") as f:
-                bg_bytes = f.read()
-        except OSError:
-            pass
-    card = await asyncio.to_thread(
-        make_welcome_card, avatar_bytes, bg_bytes, member.display_name,
-        member.guild.member_count, w["color"], member.guild.name,
-    )
-    embed = discord.Embed(
-        title=fill_placeholders(w["title"], member)[:256],
-        description=fill_placeholders(w["message"], member)[:4000],
-        color=int(w["color"].lstrip("#"), 16),
-        timestamp=discord.utils.utcnow(),
-    )
-    embed.set_image(url="attachment://bienvenue.png")
-    embed.set_footer(text=member.guild.name, icon_url=member.guild.icon.url if member.guild.icon else None)
-    return embed, discord.File(io.BytesIO(card), filename="bienvenue.png")
-
-
-async def send_welcome(member):
-    if member.bot:
-        return
-    g = get_guild(member.guild.id)
-    w = get_welcome(g)
-
-    if w["roleId"]:
-        role = member.guild.get_role(w["roleId"])
-        if role:
-            try:
-                await member.add_roles(role, reason="Rôle automatique d'arrivée")
-            except discord.HTTPException:
-                pass
-
-    if not w["enabled"] or not w["channelId"]:
-        return
-    channel = member.guild.get_channel(w["channelId"])
-    if not channel:
-        return
-    try:
-        embed, file = await build_welcome(member, w)
-        await channel.send(
-            content=f"👋 {member.mention}",
-            embed=embed,
-            file=file,
-            allowed_mentions=discord.AllowedMentions(users=[member]),
-        )
-    except Exception as e:
-        print(f"❌ Message de bienvenue impossible : {e}")
-
-
-class WelcomeModal(discord.ui.Modal, title="Message de bienvenue"):
-    def __init__(self, w):
-        super().__init__()
-        self.titre = discord.ui.TextInput(label="Titre", default=w["title"], max_length=200)
-        self.texte = discord.ui.TextInput(
-            label="Message ({user} {name} {server} {count})",
-            style=discord.TextStyle.paragraph, default=w["message"], max_length=1500,
-        )
-        self.add_item(self.titre)
-        self.add_item(self.texte)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        set_welcome(interaction.guild_id, title=self.titre.value, message=self.texte.value)
-        await interaction.response.send_message(
-            "✅ Message mis à jour. Teste le rendu avec `/bienvenue_config test`.", ephemeral=True
-        )
-
-
-@app_commands.default_permissions(administrator=True)
-@app_commands.guild_only()
-class WelcomeConfig(app_commands.Group, name="bienvenue_config", description="Configurer le système de bienvenue"):
-
-    @app_commands.command(name="salon", description="Salon où les messages de bienvenue sont envoyés (et active le système)")
-    @app_commands.describe(salon="Le salon de bienvenue")
-    async def salon(self, interaction: discord.Interaction, salon: discord.TextChannel):
-        set_welcome(interaction.guild_id, channelId=salon.id, enabled=True)
-        await interaction.response.send_message(f"✅ Bienvenue activée dans {salon.mention}.", ephemeral=True)
-
-    @app_commands.command(name="message", description="Modifier le titre et le texte du message")
-    async def message(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(WelcomeModal(get_welcome(get_guild(interaction.guild_id))))
-
-    @app_commands.command(name="couleur", description="Couleur principale (ex : #FF5733)")
-    @app_commands.describe(hexa="Code couleur hexadécimal, ex : #FF5733")
-    async def couleur(self, interaction: discord.Interaction, hexa: str):
-        hexa = hexa.strip()
-        if not re.fullmatch(r"#?[0-9a-fA-F]{6}", hexa):
-            return await interaction.response.send_message("❌ Format invalide. Exemple : `#FF5733`", ephemeral=True)
-        set_welcome(interaction.guild_id, color="#" + hexa.lstrip("#").upper())
-        await interaction.response.send_message("✅ Couleur mise à jour.", ephemeral=True)
-
-    @app_commands.command(name="fond", description="Image de fond de la carte (sans image = retire le fond)")
-    @app_commands.describe(image="Image de fond (idéal : 1000x420)")
-    async def fond(self, interaction: discord.Interaction, image: discord.Attachment = None):
-        if image is None:
-            set_welcome(interaction.guild_id, hasBackground=False)
-            return await interaction.response.send_message("🗑️ Fond retiré (dégradé par défaut).", ephemeral=True)
-        if not (image.content_type or "").startswith("image/") or image.size > 8_000_000:
-            return await interaction.response.send_message("❌ Envoie une image de moins de 8 Mo.", ephemeral=True)
-        data = await image.read()
-        try:
-            await asyncio.to_thread(lambda: Image.open(io.BytesIO(data)).verify())
-        except Exception:
-            return await interaction.response.send_message("❌ Image illisible.", ephemeral=True)
-        with open(background_path(interaction.guild_id), "wb") as f:
-            f.write(data)
-        set_welcome(interaction.guild_id, hasBackground=True)
-        await interaction.response.send_message("✅ Fond enregistré. Teste avec `/bienvenue_config test`.", ephemeral=True)
-
-    @app_commands.command(name="role_auto", description="Rôle donné automatiquement à l'arrivée (sans rôle = désactivé)")
-    @app_commands.describe(role="Rôle à donner aux nouveaux membres")
-    async def role_auto(self, interaction: discord.Interaction, role: discord.Role = None):
-        set_welcome(interaction.guild_id, roleId=role.id if role else None)
-        txt = f"✅ Les nouveaux membres recevront {role.mention}." if role else "🗑️ Rôle automatique désactivé."
-        await interaction.response.send_message(txt, ephemeral=True)
-
-    @app_commands.command(name="etat", description="Activer ou désactiver les messages de bienvenue")
-    @app_commands.describe(actif="Activer ?")
-    async def etat(self, interaction: discord.Interaction, actif: bool):
-        set_welcome(interaction.guild_id, enabled=actif)
-        await interaction.response.send_message("✅ Activé." if actif else "⏸️ Désactivé.", ephemeral=True)
-
-    @app_commands.command(name="test", description="Prévisualiser le message de bienvenue (visible par toi seul)")
-    async def test(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        w = get_welcome(get_guild(interaction.guild_id))
-        embed, file = await build_welcome(interaction.user, w)
-        await interaction.followup.send(content=f"👋 {interaction.user.mention}", embed=embed, file=file, ephemeral=True)
-
-    @app_commands.command(name="voir", description="Voir la configuration de la bienvenue")
-    async def voir(self, interaction: discord.Interaction):
-        w = get_welcome(get_guild(interaction.guild_id))
-        embed = discord.Embed(title="⚙️ Bienvenue", color=int(w["color"].lstrip("#"), 16))
-        embed.add_field(name="État", value="✅ Activée" if w["enabled"] else "⏸️ Désactivée")
-        embed.add_field(name="Salon", value=f"<#{w['channelId']}>" if w["channelId"] else "Non défini")
-        embed.add_field(name="Rôle auto", value=f"<@&{w['roleId']}>" if w["roleId"] else "Aucun")
-        embed.add_field(name="Couleur", value=w["color"])
-        embed.add_field(name="Fond", value="Image perso" if w["hasBackground"] else "Dégradé")
-        embed.add_field(name="Titre", value=w["title"][:200], inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+    # Discord limite à 10 embeds et ~6000 caractères par message : on envoie par paquets
+    batch, size = [], 0
+    for e in embeds:
+        n = len(e)
+        if batch and (len(batch) == 10 or size + n > 5500):
+            await channel.send(embeds=batch)
+            batch, size = [], 0
+        batch.append(e)
+        size += n
+    if batch:
+        await channel.send(embeds=batch)
 
 
 # ---------- Bot ----------
@@ -995,7 +787,6 @@ class TicketBot(discord.Client):
         self.tree.add_command(blacklist, guild=guild)
         self.tree.add_command(unblacklist, guild=guild)
         self.tree.add_command(blacklist_liste, guild=guild)
-        self.tree.add_command(WelcomeConfig(), guild=guild)
 
     async def sync_guild(self, guild, force=False):
         self.register_guild(guild)
@@ -1046,8 +837,6 @@ class TicketBot(discord.Client):
                 await member.add_roles(role, reason="Blacklist (retour sur le serveur)")
             except discord.HTTPException as e:
                 print(f"❌ Impossible de remettre le rôle blacklist à {member}: {e}")
-            return
-        await send_welcome(member)
 
     async def on_member_update(self, before, after):
         # Si quelqu'un retire le rôle à un blacklisté, il est remis
