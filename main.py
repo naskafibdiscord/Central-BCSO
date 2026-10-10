@@ -522,19 +522,34 @@ class TicketBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
-        self.tree.add_command(TicketConfig())
-        self.tree.add_command(ReponseConfig())
-        self.tree.add_command(reponse)
         # Vues persistantes : les menus/boutons marchent encore après un redémarrage
         placeholder = [discord.SelectOption(label="placeholder", value="placeholder")]
         v = discord.ui.View(timeout=None)
         v.add_item(TicketSelect(placeholder))
         self.add_view(v)
         self.add_view(CloseView())
+        # Vide les anciennes commandes globales (évite les doublons avec celles du serveur)
         await self.tree.sync()
+
+    async def sync_guild(self, guild):
+        # Commandes synchronisées directement sur le serveur : elles apparaissent tout de suite
+        self.tree.clear_commands(guild=guild)
+        self.tree.add_command(TicketConfig(), guild=guild)
+        self.tree.add_command(ReponseConfig(), guild=guild)
+        self.tree.add_command(reponse, guild=guild)
+        synced = await self.tree.sync(guild=guild)
+        print(f"🔄 {guild.name} : {len(synced)} commandes -> {[c.name for c in synced]}")
 
     async def on_ready(self):
         print(f"✅ Connecté en tant que {self.user}")
+        for guild in self.guilds:
+            try:
+                await self.sync_guild(guild)
+            except Exception as e:
+                print(f"❌ Synchronisation impossible sur {guild.name} : {e}")
+
+    async def on_guild_join(self, guild):
+        await self.sync_guild(guild)
 
 
 bot = TicketBot()
