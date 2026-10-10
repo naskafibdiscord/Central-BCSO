@@ -191,8 +191,13 @@ class TicketSelect(discord.ui.Select):
             embed=embed,
             view=CloseView(),
         )
-        if is_recruitment(ticket_type):
-            await send_recruitment_form(channel, interaction.user)
+        recruit = is_recruitment(ticket_type)
+        print(f"🎫 Ticket « {ticket_type['name']} » ouvert par {interaction.user} | formulaire recrutement : {recruit}")
+        if recruit:
+            try:
+                await send_recruitment_form(channel, interaction.user)
+            except Exception as e:
+                print(f"❌ Formulaire de recrutement impossible : {e}")
         await interaction.followup.send(f"✅ Ticket créé : {channel.mention}", ephemeral=True)
 
 
@@ -732,7 +737,8 @@ RECRUIT_SECTIONS = [
 
 
 def is_recruitment(ticket_type):
-    return "recrutement" in slug(ticket_type["name"])
+    name = slug(ticket_type["name"])
+    return any(word in name for word in ("recrut", "candidat"))
 
 
 async def send_recruitment_form(channel, user):
